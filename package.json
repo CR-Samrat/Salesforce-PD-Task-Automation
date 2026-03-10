@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@salesforce/core": "^8.27.0",
-    "jsforce": "^3.10.14"
+    "jsforce": "^3.10.14",
+    "xlsx": "^0.18.5"
   }
 }

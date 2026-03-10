@@ -2,10 +2,17 @@
   "fieldLevelSecurity": [
     {
       "object": "Account",
-      "field": "CustomerPriority__c",
-      "profile": "Standard User",
+      "field": "AnnualRevenue",
+      "profile": "Custom: Sales Profile",
       "readable": true,
       "editable": false
+    },
+    {
+      "object": "Contact",
+      "field": "Email",
+      "profile": "Customer Community User",
+      "readable": true,
+      "editable": true
     }
   ],
   "apexClassAccess": [
@@ -19,8 +26,9 @@
     {
       "sObject": "Account",
       "data": {
-        "Name": "Test Account PD",
-        "Type": "Customer - Direct"
+        "Name": "Test PD Account",
+        "Industry": "Technology",
+        "Phone": "1234567890"
       }
     }
   ]
