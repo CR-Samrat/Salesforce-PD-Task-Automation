@@ -1,0 +1,17 @@
+{
+  "name": "salesforce-pd-task-automation",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node post-deploy.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@salesforce/core": "^8.27.0",
+    "jsforce": "^3.10.14"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "fieldLevelSecurity": [
+    {
+      "object": "Account",
+      "field": "CustomerPriority__c",
+      "profile": "Standard User",
+      "readable": true,
+      "editable": false
+    }
+  ],
+  "apexClassAccess": [
+    {
+      "className": "OpportunityClass",
+      "profile": "Standard User",
+      "enabled": true
+    }
+  ],
+  "customRecords": [
+    {
+      "sObject": "Account",
+      "data": {
+        "Name": "Test Account PD",
+        "Type": "Customer - Direct"
+      }
+    }
+  ]
+}
