@@ -8,7 +8,8 @@ const data = XLSX.utils.sheet_to_json(sheet);
 const config = {
     fieldLevelSecurity: [],
     apexClassAccess: [],
-    customRecords: []
+    customRecords: [],
+    picklistValues: []
 };
 
 data.forEach(row => {
@@ -32,6 +33,17 @@ data.forEach(row => {
                 enabled: String(row['Enabled']).toUpperCase() === 'TRUE'
             });
             break;
+        
+        case 'PicklistValue':
+            config.picklistValues.push({
+                object: row['Object API Name'],
+                field: row['Field API Name'],
+                value: row['Picklist Value'],
+                label: row['Picklist Label'] || row['Picklist Value'],
+                isActive: String(row['Is Active']).toUpperCase() === 'TRUE',
+                isDefault: String(row['Is Default']).toUpperCase() === 'TRUE'
+            });
+            break;
             
         case 'Record':
             const recordData = {
@@ -51,4 +63,5 @@ fs.writeFileSync('./config.json', JSON.stringify(config, null, 2));
 console.log(`✅ Generated config.json with:`);
 console.log(`   - ${config.fieldLevelSecurity.length} FLS tasks`);
 console.log(`   - ${config.apexClassAccess.length} Apex Access tasks`);
-console.log(`   - ${config.customRecords.length} Record Creation tasks`);
+console.log(`   - ${config.picklistValues.length} Picklist Value tasks`);
+console.log(`   - ${config.customRecords.length} Custom Record tasks`);

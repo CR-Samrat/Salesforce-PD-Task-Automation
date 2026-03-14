@@ -1,35 +1,21 @@
 {
   "fieldLevelSecurity": [
-    {
-      "object": "Account",
-      "field": "AnnualRevenue",
-      "profile": "Custom: Sales Profile",
-      "readable": true,
-      "editable": false
-    },
-    {
-      "object": "Contact",
-      "field": "Email",
-      "profile": "Customer Community User",
-      "readable": true,
-      "editable": true
-    }
   ],
   "apexClassAccess": [
-    {
-      "className": "OpportunityClass",
-      "profile": "Standard User",
-      "enabled": true
-    }
   ],
   "customRecords": [
     {
       "sObject": "Account",
+      "operation": "delete",
       "data": {
+        "Id": "001WU00001rLWXLYA4",
         "Name": "Test PD Account",
         "Industry": "Technology",
-        "Phone": "1234567890"
+        "Phone": "1234567890",
+        "Website": "www.testpdaccount.com"
       }
     }
+  ],
+  "picklistValues": [
   ]
 }

@@ -27,6 +27,10 @@ async function main() {
             await updateApexClassAccess(connection, config.apexClassAccess);
         }
 
+        if (config.picklistValues && config.picklistValues.length > 0) {
+            await addPicklistValues(connection, config.picklistValues);
+        }
+
         if (config.customRecords && config.customRecords.length > 0) {
             await createCustomRecords(connection, config.customRecords);
         }
@@ -75,7 +79,16 @@ async function updateFieldLevelSecurity(connection, flsConfig) {
 
             if (fpResult.records.length > 0) {
                 // Update existing FieldPermissions
-                const fieldPermissionId = fpResult.records[0].Id;
+                const extFieldPermission = fpResult.records[0];
+                const fieldPermissionId = extFieldPermission.Id;
+                const needsUpdate = extFieldPermission.PermissionsRead !== fls.readable ||
+                                    extFieldPermission.PermissionsEdit !== fls.editable;
+
+                if (!needsUpdate) {
+                    console.log(`   ℹ️  Field permissions already have desired settings`);
+                    continue;
+                }
+
                 await connection.sobject('FieldPermissions').update({
                     Id: fieldPermissionId,
                     PermissionsRead: fls.readable,
@@ -164,24 +177,184 @@ async function updateApexClassAccess(connection, apexConfig) {
     }
 }
 
-async function createCustomRecords(connection, recordsConfig) {
-    console.log('\n📝 Creating Custom Records...');
+async function addPicklistValues(connection, picklistConfig) {
+    console.log('\n📝 Adding Picklist Values...');
 
-    for (const record of recordsConfig) {
+    for (const picklist of picklistConfig) {
         try {
-            console.log(`   - ${record.sObject}: ${record.data.Name || 'Record'}`);
+            console.log(`   - ${picklist.object}.${picklist.field}: Adding "${picklist.value}"`);
 
-            const result = await connection.sobject(record.sObject).create(record.data);
+            // Step 1: Get the field's metadata to find the picklist
+            const fieldQuery = `
+                SELECT Id, QualifiedApiName, DurableId 
+                FROM FieldDefinition 
+                WHERE EntityDefinition.QualifiedApiName = '${picklist.object}' 
+                AND QualifiedApiName = '${picklist.field}'
+            `;
+            
+            const fieldResult = await connection.query(fieldQuery);
 
-            if (result.success) {
-                console.log(`   ✅ Created successfully (ID: ${result.id})`);
-            } else {
-                console.log(`   ❌ Failed: ${result.errors.join(', ')}`);
+            if (fieldResult.records.length === 0) {
+                console.log(`   ⚠️  Field '${picklist.object}.${picklist.field}' not found. Skipping.`);
+                continue;
             }
+
+            const durableId = fieldResult.records[0].DurableId;
+
+            // Step 2: Check if the picklist value already exists
+            const valueQuery = `
+                SELECT Id, Value, IsActive 
+                FROM PicklistValueInfo 
+                WHERE EntityParticleId = '${durableId}' 
+                AND Value = '${picklist.value}'
+            `;
+
+            const valueResult = await connection.query(valueQuery);
+
+            if (valueResult.records.length > 0) {
+                await updatePicklistValue(connection, picklist);
+                continue;
+            }
+
+            await deployPicklistValue(connection, picklist);
 
         } catch (error) {
             console.log(`   ❌ Failed: ${error.message}`);
         }
+    }
+}
+
+async function deployPicklistValue(connection, picklist) {
+    try {
+        const readResult = await connection.metadata.read('CustomField', 
+            `${picklist.object}.${picklist.field}`
+        );
+
+        if (!readResult || !readResult.valueSet) {
+            console.log(`   ⚠️  Field is not a picklist or doesn't exist`);
+            return;
+        }
+
+        // Check if value already exists
+        const existingValues = readResult.valueSet.valueSetDefinition?.value || [];
+        const valueExists = existingValues.some(v => v.fullName === picklist.value);
+
+        if (valueExists) {
+            console.log(`   ℹ️  Value "${picklist.value}" already exists`);
+            await updatePicklistValue(connection, picklist);
+            return;
+        }
+
+        // Add new value
+        const newValue = {
+            fullName: picklist.value,
+            label: picklist.label || picklist.value,
+            default: picklist.isDefault || false,
+            isActive: picklist.isActive !== false
+        };
+
+        existingValues.push(newValue);
+        readResult.valueSet.valueSetDefinition.value = existingValues;
+
+        // Update the field
+        const updateResult = await connection.metadata.update('CustomField', readResult);
+
+        if (updateResult.success) {
+            console.log(`   ✅ Added picklist value "${picklist.value}"`);
+        } else {
+            console.log(`   ❌ Failed to add value: ${updateResult.errors?.join(', ')}`);
+        }
+
+    } catch (error) {
+        console.log(`   ❌ Metadata deployment failed: ${error.message}`);
+    }
+}
+
+async function updatePicklistValue(connection, picklist) {
+    try {
+        const readResult = await connection.metadata.read(
+            'CustomField',
+            `${picklist.object}.${picklist.field}`
+        );
+
+        if (!readResult || !readResult.valueSet) {
+            console.log(`⚠️ Field is not a picklist or doesn't exist`);
+            return;
+        }
+
+        const existingValues = readResult.valueSet.valueSetDefinition?.value || [];
+        const targetIndex = existingValues.findIndex(v => v.fullName === picklist.value);
+
+        if (targetIndex === -1) {
+            console.log(`❌ Value "${picklist.value}" not found`);
+            return;
+        }
+
+        // Update the existing value
+        existingValues[targetIndex] = {
+            ...existingValues[targetIndex],
+            label: picklist.label || existingValues[targetIndex].label,
+            default: picklist.isDefault ?? existingValues[targetIndex].default,
+            isActive: picklist.isActive ?? existingValues[targetIndex].isActive
+        };
+
+        // Replace the full array
+        readResult.valueSet.valueSetDefinition.value = existingValues;
+
+        // Push update
+        const updateResult = await connection.metadata.update('CustomField', readResult);
+
+        if (updateResult.success) {
+            console.log(`✅ Updated picklist value "${picklist.value}"`);
+        } else {
+            console.log(`❌ Failed to update value: ${updateResult.errors?.join(', ')}`);
+        }
+
+    } catch (error) {
+        console.log(`❌ Metadata update failed: ${error.message}`);
+    }
+}
+
+async function createCustomRecords(connection, recordsConfig) {
+    console.log('\n📝 Creating Custom Records...');
+
+    for (const record of recordsConfig) {
+        console.log(`   - ${record.sObject}: ${record.data.Name || 'Record'}`);
+            
+        const operation = (record?.operation || 'create').toLowerCase();
+
+        if(['create','update','delete'].indexOf(operation) === -1) {
+            console.log(`   ⚠️  Invalid operation "${operation}". Skipping.`);
+            continue;
+        }
+
+        if (operation === 'update' || operation === 'delete') {
+            if (!record.data.Id) {
+                console.log(`   ⚠️  ${operation.charAt(0).toUpperCase() + operation.slice(1)} operation requires an Id field. Skipping.`);
+                continue;
+            }
+        }
+
+        try {
+            let result;
+            if (operation === 'create') {
+                result = await connection.sobject(record.sObject).create(record.data);
+            } else if (operation === 'update') {
+                result = await connection.sobject(record.sObject).update(record.data);
+            } else {
+                result = await connection.sobject(record.sObject).delete(record.data.Id);
+            }
+
+            if (result?.success) {
+                console.log(`✅ ${operation} successful (ID: ${result.id || record.data.Id})`);
+            } else {
+                const errors = (result?.errors || []).map(e => e.message || e).join(', ');
+                console.log(`❌ Failed: ${errors || 'Unknown error'}`);
+            }
+        } catch (error) {
+            console.log(`❌ Failed: ${error.message}`);
+        }
+
     }
 }
 
