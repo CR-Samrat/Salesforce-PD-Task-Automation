@@ -1,10 +1,32 @@
 {
   "name": "salesforce-pd-task-automation",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "1.0.2",
+  "description": "Salesforce Post-Deployment Automation CLI",
+  "bin":{
+    "pd": "./cli.js"
+  },
+  "pkg": {
+    "scripts": [
+      "cli.js"
+    ],
+    "assets": [
+      "node_modules/@salesforce/**/*",
+      "node_modules/jsforce/**/*",
+      "node_modules/xlsx/**/*",
+      "node_modules/commander/**/*",
+      "node_modules/thread-stream/**/*",
+      "node_modules/pino/**/*",
+      "node_modules/pino-abstract-transport/**/*",
+      "node_modules/pino-std-serializers/**/*",
+      "node_modules/sonic-boom/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
+  },
   "scripts": {
-    "start": "node post-deploy.js"
+    "build": "pkg . --targets node18-win-x64 --output dist/pd.exe"
   },
   "keywords": [],
   "author": "",
@@ -12,6 +34,7 @@
   "type": "commonjs",
   "dependencies": {
     "@salesforce/core": "^8.27.0",
+    "commander": "^14.0.3",
     "jsforce": "^3.10.14",
     "xlsx": "^0.18.5"
   }

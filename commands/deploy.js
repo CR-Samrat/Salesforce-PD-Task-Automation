@@ -1,24 +1,47 @@
-const { Org } = require('@salesforce/core');
 const fs = require('fs');
+const { Org } = require('@salesforce/core');
 
-async function main() {
+async function startDeployment(orgAlias, configPath) {
     try {
-        console.log('🚀 Starting post-deployment tasks...\n');
+        console.log('🚀 Salesforce Post-Deploy: Start Deployment\n');
 
-        // 1. Get org alias from command line argument or use default
-        const orgAlias = process.argv[2] || 'your-dev-org-alias';
-        console.log(`📡 Connecting to org: ${orgAlias}`);
+        // Check if config exists
+        if (!fs.existsSync(configPath)) {
+            console.error(`❌ Config file not found: ${configPath}`);
+            console.log('💡 Run "pd generate config-from-excel" first');
+            process.exit(1);
+        }
 
-        // 2. Connect to Salesforce org using existing authentication
+        // Connect to Salesforce
+        console.log(`📡 Connecting to org: ${orgAlias}...`);
         const org = await Org.create({ aliasOrUsername: orgAlias });
         const connection = org.getConnection();
         console.log(`✅ Connected successfully!\n`);
 
-        // 3. Read configuration file
-        const config = JSON.parse(fs.readFileSync('./config.json', 'utf8'));
-        console.log('📋 Configuration loaded\n');
+        // Load config
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        
+        // Validate config
+        const totalTasks = 
+            (config.fieldLevelSecurity?.length || 0) +
+            (config.apexClassAccess?.length || 0) +
+            (config.picklistValues?.length || 0) +
+            (config.customRecords?.length || 0);
 
-        // 4. Execute tasks based on config
+        if (totalTasks === 0) {
+            console.error('❌ No tasks found in config.json');
+            console.log('💡 Make sure your Excel file has tasks and regenerate config');
+            process.exit(1);
+        }
+
+        console.log('📋 Loaded configuration:');
+        console.log(`   - ${config.fieldLevelSecurity?.length || 0} FLS tasks`);
+        console.log(`   - ${config.apexClassAccess?.length || 0} Apex Access tasks`);
+        console.log(`   - ${config.picklistValues?.length || 0} Picklist Value tasks`);
+        console.log(`   - ${config.customRecords?.length || 0} Record Creation tasks`);
+        console.log(`   - Total: ${totalTasks} tasks\n`);
+
+        // Execute tasks
         if (config.fieldLevelSecurity && config.fieldLevelSecurity.length > 0) {
             await updateFieldLevelSecurity(connection, config.fieldLevelSecurity);
         }
@@ -36,14 +59,20 @@ async function main() {
         }
 
         console.log('\n✅ All post-deployment tasks completed successfully!');
+        console.log('🎉 Deployment complete!\n');
 
     } catch (error) {
-        console.error('❌ Error during post-deployment:', error.message);
-        console.error(error.stack);
+        if (error.name === 'NamedOrgNotFound') {
+            console.error(`❌ Org not found: ${orgAlias}`);
+            console.log('💡 Make sure you\'re logged in: sf org login web --alias ' + orgAlias);
+        } else {
+            console.error('❌ Deployment error:', error.message);
+        }
         process.exit(1);
     }
 }
 
+// Import your existing functions
 async function updateFieldLevelSecurity(connection, flsConfig) {
     console.log('🔐 Updating Field Level Security...');
 
@@ -358,4 +387,4 @@ async function createCustomRecords(connection, recordsConfig) {
     }
 }
 
-main();
+module.exports = { startDeployment };
