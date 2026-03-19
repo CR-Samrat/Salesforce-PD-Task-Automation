@@ -72,68 +72,82 @@ async function startDeployment(orgAlias, configPath) {
     }
 }
 
-// Import your existing functions
 async function updateFieldLevelSecurity(connection, flsConfig) {
     console.log('🔐 Updating Field Level Security...');
 
     for (const fls of flsConfig) {
         try {
-            console.log(`   - ${fls.object}.${fls.field} for Profile: ${fls.profile}`);
+            // Step 1: Normalize profile list
+            const profiles = Array.isArray(fls.profile) ? fls.profile : fls.profile.split(',').map(p => p.trim());
 
-            // Find the Profile's associated Permission Set
+            console.log(`   - ${fls.object}.${fls.field} for Profiles: ${profiles.join(', ')}`);
+
+            // Step 2: Query all PermissionSets for these profiles in one go
             const psQuery = `
-                SELECT Id, Name, ProfileId, Profile.Name 
-                FROM PermissionSet 
-                WHERE Profile.Name = '${fls.profile}' 
+                SELECT Id, Name, ProfileId, Profile.Name
+                FROM PermissionSet
+                WHERE Profile.Name IN ('${profiles.join("','")}')
                 AND IsOwnedByProfile = true
             `;
             const psResult = await connection.query(psQuery);
 
             if (psResult.records.length === 0) {
-                console.log(`   ⚠️  Profile '${fls.profile}' or its Permission Set not found. Skipping.`);
+                console.log(`   ⚠️ No matching PermissionSets found for profiles. Skipping.`);
                 continue;
             }
 
-            const permissionSetId = psResult.records[0].Id;
-
-            // Query to find if FieldPermissions already exists
+            // Step 3: For each PermissionSet, check existing FieldPermissions
+            const permissionSetIds = psResult.records.map(r => r.Id);
             const fpQuery = `
-                SELECT Id, PermissionsRead, PermissionsEdit 
-                FROM FieldPermissions 
-                WHERE ParentId = '${permissionSetId}' 
-                AND SobjectType = '${fls.object}' 
+                SELECT Id, ParentId, PermissionsRead, PermissionsEdit
+                FROM FieldPermissions
+                WHERE ParentId IN ('${permissionSetIds.join("','")}')
+                AND SobjectType = '${fls.object}'
                 AND Field = '${fls.object}.${fls.field}'
             `;
             const fpResult = await connection.query(fpQuery);
 
-            if (fpResult.records.length > 0) {
-                // Update existing FieldPermissions
-                const extFieldPermission = fpResult.records[0];
-                const fieldPermissionId = extFieldPermission.Id;
-                const needsUpdate = extFieldPermission.PermissionsRead !== fls.readable ||
-                                    extFieldPermission.PermissionsEdit !== fls.editable;
+            // Step 4: Build maps for quick lookup
+            const existingMap = new Map();
+            fpResult.records.forEach(fp => existingMap.set(fp.ParentId, fp));
 
-                if (!needsUpdate) {
-                    console.log(`   ℹ️  Field permissions already have desired settings`);
-                    continue;
+            const toUpdate = [];
+            const toInsert = [];
+
+            for (const ps of psResult.records) {
+                const existing = existingMap.get(ps.Id);
+                if (existing) {
+                    const needsUpdate =
+                        existing.PermissionsRead !== fls.readable ||
+                        existing.PermissionsEdit !== fls.editable;
+                    if (needsUpdate) {
+                        toUpdate.push({
+                            Id: existing.Id,
+                            PermissionsRead: fls.readable,
+                            PermissionsEdit: fls.editable
+                        });
+                    } else {
+                        console.log(`   ℹ️ ${ps.Profile.Name} already has desired settings`);
+                    }
+                } else {
+                    toInsert.push({
+                        ParentId: ps.Id,
+                        SobjectType: fls.object,
+                        Field: `${fls.object}.${fls.field}`,
+                        PermissionsRead: fls.readable,
+                        PermissionsEdit: fls.editable
+                    });
                 }
+            }
 
-                await connection.sobject('FieldPermissions').update({
-                    Id: fieldPermissionId,
-                    PermissionsRead: fls.readable,
-                    PermissionsEdit: fls.editable
-                });
-                console.log(`   ✅ Updated field permissions`);
-            } else {
-                // Create new FieldPermissions
-                await connection.sobject('FieldPermissions').create({
-                    ParentId: permissionSetId,
-                    SobjectType: fls.object,
-                    Field: `${fls.object}.${fls.field}`,
-                    PermissionsRead: fls.readable,
-                    PermissionsEdit: fls.editable
-                });
-                console.log(`   ✅ Created field permissions`);
+            // Step 5: Bulk DML
+            if (toUpdate.length > 0) {
+                await connection.sobject('FieldPermissions').update(toUpdate);
+                console.log(`   ✅ Updated ${toUpdate.length} field permissions`);
+            }
+            if (toInsert.length > 0) {
+                await connection.sobject('FieldPermissions').create(toInsert);
+                console.log(`   ✅ Created ${toInsert.length} field permissions`);
             }
 
         } catch (error) {
@@ -147,57 +161,79 @@ async function updateApexClassAccess(connection, apexConfig) {
 
     for (const apex of apexConfig) {
         try {
-            console.log(`   - ${apex.className} for Profile: ${apex.profile}`);
+            // Step 1: Normalize profile list
+            const profiles = Array.isArray(apex.profile) ? apex.profile : apex.profile.split(',').map(p => p.trim());
 
-            // Find the Profile's associated Permission Set
+            console.log(`   - ${apex.className} for Profiles: ${profiles.join(', ')}`);
+
+            // Step 2: Query all PermissionSets for these profiles
             const psQuery = `
-                SELECT Id, Name, ProfileId, Profile.Name 
-                FROM PermissionSet 
-                WHERE Profile.Name = '${apex.profile}' 
+                SELECT Id, Name, Profile.Name
+                FROM PermissionSet
+                WHERE Profile.Name IN ('${profiles.join("','")}')
                 AND IsOwnedByProfile = true
             `;
             const psResult = await connection.query(psQuery);
 
             if (psResult.records.length === 0) {
-                console.log(`   ⚠️  Profile '${apex.profile}' or its Permission Set not found. Skipping.`);
+                console.log(`   ⚠️ No matching PermissionSets found for profiles. Skipping.`);
                 continue;
             }
 
-            const permissionSetId = psResult.records[0].Id;
-
-            // Query to find the Apex Class
+            // Step 3: Query Apex Class once
             const classQuery = `SELECT Id FROM ApexClass WHERE Name = '${apex.className}'`;
             const classResult = await connection.query(classQuery);
 
             if (classResult.records.length === 0) {
-                console.log(`   ⚠️  Apex Class '${apex.className}' not found. Skipping.`);
+                console.log(`   ⚠️ Apex Class '${apex.className}' not found. Skipping.`);
                 continue;
             }
-
             const apexClassId = classResult.records[0].Id;
 
-            // Query to find if SetupEntityAccess already exists
+            // Step 4: Query existing SetupEntityAccess for all PermissionSets
+            const permissionSetIds = psResult.records.map(r => r.Id);
             const seaQuery = `
-                SELECT Id 
-                FROM SetupEntityAccess 
-                WHERE ParentId = '${permissionSetId}' 
+                SELECT Id, ParentId
+                FROM SetupEntityAccess
+                WHERE ParentId IN ('${permissionSetIds.join("','")}')
                 AND SetupEntityId = '${apexClassId}'
             `;
             const seaResult = await connection.query(seaQuery);
 
-            if (apex.enabled && seaResult.records.length === 0) {
-                // Create access if enabled and doesn't exist
-                await connection.sobject('SetupEntityAccess').create({
-                    ParentId: permissionSetId,
-                    SetupEntityId: apexClassId
-                });
-                console.log(`   ✅ Granted access`);
-            } else if (!apex.enabled && seaResult.records.length > 0) {
-                // Remove access if disabled and exists
-                await connection.sobject('SetupEntityAccess').delete(seaResult.records[0].Id);
-                console.log(`   ✅ Revoked access`);
-            } else {
-                console.log(`   ℹ️  Already in desired state`);
+            const existingMap = new Map();
+            seaResult.records.forEach(sea => existingMap.set(sea.ParentId, sea));
+
+            const toInsert = [];
+            const toDelete = [];
+
+            for (const ps of psResult.records) {
+                const existing = existingMap.get(ps.Id);
+                if (apex.enabled) {
+                    if (!existing) {
+                        toInsert.push({
+                            ParentId: ps.Id,
+                            SetupEntityId: apexClassId
+                        });
+                    } else {
+                        console.log(`   ℹ️ ${ps.Profile.Name} already has access`);
+                    }
+                } else {
+                    if (existing) {
+                        toDelete.push(existing.Id);
+                    } else {
+                        console.log(`   ℹ️ ${ps.Profile.Name} already has no access`);
+                    }
+                }
+            }
+
+            // Step 5: Bulk DML
+            if (toInsert.length > 0) {
+                await connection.sobject('SetupEntityAccess').create(toInsert);
+                console.log(`   ✅ Granted access for ${toInsert.length} profiles`);
+            }
+            if (toDelete.length > 0) {
+                await connection.sobject('SetupEntityAccess').delete(toDelete);
+                console.log(`   ✅ Revoked access for ${toDelete.length} profiles`);
             }
 
         } catch (error) {

@@ -50,10 +50,12 @@ async function convertExcelToConfig(excelPath) {
                             errors.push(`Row ${rowNum}: FLS task missing required fields (Profile, Object, or Field)`);
                             break;
                         }
+
+                        let flsProfileList = row['Profile Name'].split(',').map(p => p.trim());
                         config.fieldLevelSecurity.push({
                             object: row['Object API Name'],
                             field: row['Field API Name'],
-                            profile: row['Profile Name'],
+                            profile: flsProfileList.length === 1 ? flsProfileList[0] : flsProfileList,
                             readable: String(row['Readable']).toUpperCase() === 'TRUE',
                             editable: String(row['Editable']).toUpperCase() === 'TRUE'
                         });
@@ -64,9 +66,11 @@ async function convertExcelToConfig(excelPath) {
                             errors.push(`Row ${rowNum}: ApexAccess task missing required fields (Profile or Class Name)`);
                             break;
                         }
+
+                        let apexProfileList = row['Profile Name'].split(',').map(p => p.trim());
                         config.apexClassAccess.push({
                             className: row['Apex Class Name'],
-                            profile: row['Profile Name'],
+                            profile: apexProfileList.length === 1 ? apexProfileList[0] : apexProfileList,
                             enabled: String(row['Enabled']).toUpperCase() === 'TRUE'
                         });
                         break;

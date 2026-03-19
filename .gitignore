@@ -5,6 +5,7 @@ node_modules/
 .DS_Store
 config.json
 screenshots/*.png
+dist/*.exe
 !screenshots/step1-authentication.png
 !screenshots/step2-excel-template.png
 !screenshots/step3-conversion.png
