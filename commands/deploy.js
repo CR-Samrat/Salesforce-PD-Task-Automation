@@ -1,5 +1,15 @@
 const fs = require('fs');
 const { Org } = require('@salesforce/core');
+const {
+    escapeSoqlString,
+    escapeSoqlArray,
+    isValidSalesforceIdentifier,
+    isValidProfileName,
+    isValidSalesforceId,
+    containsPathTraversal,
+    RESTRICTED_SOBJECTS,
+    RESTRICTED_FIELDS
+} = require('../utils/security');
 
 async function startDeployment(orgAlias, configPath) {
     try {
@@ -77,16 +87,38 @@ async function updateFieldLevelSecurity(connection, flsConfig) {
 
     for (const fls of flsConfig) {
         try {
-            // Step 1: Normalize profile list
-            const profiles = Array.isArray(fls.profile) ? fls.profile : fls.profile.split(',').map(p => p.trim());
+            // Normalize profile list
+            const profiles = Array.isArray(fls.profile) 
+                ? fls.profile 
+                : fls.profile.split(',').map(p => p.trim());
+
+            // SECURITY: Validate all profiles
+            const invalidProfiles = profiles.filter(p => !isValidProfileName(p));
+            if (invalidProfiles.length > 0) {
+                console.log(`   ⚠️ Invalid profile names: ${invalidProfiles.join(', ')}. Skipping.`);
+                continue;
+            }
+
+            // SECURITY: Validate object name
+            if (!isValidSalesforceIdentifier(fls.object)) {
+                console.log(`   ⚠️ Invalid object name: ${fls.object}. Skipping.`);
+                continue;
+            }
+
+            // SECURITY: Validate field name
+            if (!isValidSalesforceIdentifier(fls.field)) {
+                console.log(`   ⚠️ Invalid field name: ${fls.field}. Skipping.`);
+                continue;
+            }
 
             console.log(`   - ${fls.object}.${fls.field} for Profiles: ${profiles.join(', ')}`);
 
-            // Step 2: Query all PermissionSets for these profiles in one go
+            // SECURITY: Escape profile names for SOQL
+            const escapedProfiles = escapeSoqlArray(profiles);
             const psQuery = `
                 SELECT Id, Name, ProfileId, Profile.Name
                 FROM PermissionSet
-                WHERE Profile.Name IN ('${profiles.join("','")}')
+                WHERE Profile.Name IN ('${escapedProfiles.join("','")}')
                 AND IsOwnedByProfile = true
             `;
             const psResult = await connection.query(psQuery);
@@ -96,18 +128,21 @@ async function updateFieldLevelSecurity(connection, flsConfig) {
                 continue;
             }
 
-            // Step 3: For each PermissionSet, check existing FieldPermissions
             const permissionSetIds = psResult.records.map(r => r.Id);
+            
+            // SECURITY: Escape object and field names
+            const escapedObject = escapeSoqlString(fls.object);
+            const escapedField = escapeSoqlString(fls.field);
+            
             const fpQuery = `
                 SELECT Id, ParentId, PermissionsRead, PermissionsEdit
                 FROM FieldPermissions
                 WHERE ParentId IN ('${permissionSetIds.join("','")}')
-                AND SobjectType = '${fls.object}'
-                AND Field = '${fls.object}.${fls.field}'
+                AND SobjectType = '${escapedObject}'
+                AND Field = '${escapedObject}.${escapedField}'
             `;
             const fpResult = await connection.query(fpQuery);
 
-            // Step 4: Build maps for quick lookup
             const existingMap = new Map();
             fpResult.records.forEach(fp => existingMap.set(fp.ParentId, fp));
 
@@ -127,7 +162,7 @@ async function updateFieldLevelSecurity(connection, flsConfig) {
                             PermissionsEdit: fls.editable
                         });
                     } else {
-                        console.log(`   ℹ️ ${ps.Profile.Name} already has desired settings`);
+                        console.log(`   ℹ️  ${ps.Profile.Name} already has desired settings`);
                     }
                 } else {
                     toInsert.push({
@@ -140,7 +175,6 @@ async function updateFieldLevelSecurity(connection, flsConfig) {
                 }
             }
 
-            // Step 5: Bulk DML
             if (toUpdate.length > 0) {
                 await connection.sobject('FieldPermissions').update(toUpdate);
                 console.log(`   ✅ Updated ${toUpdate.length} field permissions`);
@@ -161,16 +195,31 @@ async function updateApexClassAccess(connection, apexConfig) {
 
     for (const apex of apexConfig) {
         try {
-            // Step 1: Normalize profile list
-            const profiles = Array.isArray(apex.profile) ? apex.profile : apex.profile.split(',').map(p => p.trim());
+            const profiles = Array.isArray(apex.profile) 
+                ? apex.profile 
+                : apex.profile.split(',').map(p => p.trim());
+
+            // SECURITY: Validate profiles
+            const invalidProfiles = profiles.filter(p => !isValidProfileName(p));
+            if (invalidProfiles.length > 0) {
+                console.log(`   ⚠️ Invalid profile names: ${invalidProfiles.join(', ')}. Skipping.`);
+                continue;
+            }
+
+            // SECURITY: Validate class name
+            if (!isValidSalesforceIdentifier(apex.className)) {
+                console.log(`   ⚠️ Invalid class name: ${apex.className}. Skipping.`);
+                continue;
+            }
 
             console.log(`   - ${apex.className} for Profiles: ${profiles.join(', ')}`);
 
-            // Step 2: Query all PermissionSets for these profiles
+            // SECURITY: Escape for SOQL
+            const escapedProfiles = escapeSoqlArray(profiles);
             const psQuery = `
                 SELECT Id, Name, Profile.Name
                 FROM PermissionSet
-                WHERE Profile.Name IN ('${profiles.join("','")}')
+                WHERE Profile.Name IN ('${escapedProfiles.join("','")}')
                 AND IsOwnedByProfile = true
             `;
             const psResult = await connection.query(psQuery);
@@ -180,8 +229,9 @@ async function updateApexClassAccess(connection, apexConfig) {
                 continue;
             }
 
-            // Step 3: Query Apex Class once
-            const classQuery = `SELECT Id FROM ApexClass WHERE Name = '${apex.className}'`;
+            // SECURITY: Escape class name
+            const escapedClassName = escapeSoqlString(apex.className);
+            const classQuery = `SELECT Id FROM ApexClass WHERE Name = '${escapedClassName}'`;
             const classResult = await connection.query(classQuery);
 
             if (classResult.records.length === 0) {
@@ -190,7 +240,6 @@ async function updateApexClassAccess(connection, apexConfig) {
             }
             const apexClassId = classResult.records[0].Id;
 
-            // Step 4: Query existing SetupEntityAccess for all PermissionSets
             const permissionSetIds = psResult.records.map(r => r.Id);
             const seaQuery = `
                 SELECT Id, ParentId
@@ -215,18 +264,17 @@ async function updateApexClassAccess(connection, apexConfig) {
                             SetupEntityId: apexClassId
                         });
                     } else {
-                        console.log(`   ℹ️ ${ps.Profile.Name} already has access`);
+                        console.log(`   ℹ️  ${ps.Profile.Name} already has access`);
                     }
                 } else {
                     if (existing) {
                         toDelete.push(existing.Id);
                     } else {
-                        console.log(`   ℹ️ ${ps.Profile.Name} already has no access`);
+                        console.log(`   ℹ️  ${ps.Profile.Name} already has no access`);
                     }
                 }
             }
 
-            // Step 5: Bulk DML
             if (toInsert.length > 0) {
                 await connection.sobject('SetupEntityAccess').create(toInsert);
                 console.log(`   ✅ Granted access for ${toInsert.length} profiles`);
@@ -247,31 +295,52 @@ async function addPicklistValues(connection, picklistConfig) {
 
     for (const picklist of picklistConfig) {
         try {
+            // SECURITY: Validate object and field
+            if (!isValidSalesforceIdentifier(picklist.object)) {
+                console.log(`   ⚠️ Invalid object name: ${picklist.object}. Skipping.`);
+                continue;
+            }
+
+            if (!isValidSalesforceIdentifier(picklist.field)) {
+                console.log(`   ⚠️ Invalid field name: ${picklist.field}. Skipping.`);
+                continue;
+            }
+
+            // SECURITY: Check for path traversal
+            if (containsPathTraversal(picklist.object) || containsPathTraversal(picklist.field)) {
+                console.log(`   ⚠️ Path traversal attempt detected. Skipping.`);
+                continue;
+            }
+
             console.log(`   - ${picklist.object}.${picklist.field}: Adding "${picklist.value}"`);
 
-            // Step 1: Get the field's metadata to find the picklist
+            // SECURITY: Escape for SOQL
+            const escapedObject = escapeSoqlString(picklist.object);
+            const escapedField = escapeSoqlString(picklist.field);
+
             const fieldQuery = `
                 SELECT Id, QualifiedApiName, DurableId 
                 FROM FieldDefinition 
-                WHERE EntityDefinition.QualifiedApiName = '${picklist.object}' 
-                AND QualifiedApiName = '${picklist.field}'
+                WHERE EntityDefinition.QualifiedApiName = '${escapedObject}' 
+                AND QualifiedApiName = '${escapedField}'
             `;
             
             const fieldResult = await connection.query(fieldQuery);
 
             if (fieldResult.records.length === 0) {
-                console.log(`   ⚠️  Field '${picklist.object}.${picklist.field}' not found. Skipping.`);
+                console.log(`   ⚠️  Field not found. Skipping.`);
                 continue;
             }
 
             const durableId = fieldResult.records[0].DurableId;
 
-            // Step 2: Check if the picklist value already exists
+            // SECURITY: Escape picklist value
+            const escapedValue = escapeSoqlString(picklist.value);
             const valueQuery = `
                 SELECT Id, Value, IsActive 
                 FROM PicklistValueInfo 
                 WHERE EntityParticleId = '${durableId}' 
-                AND Value = '${picklist.value}'
+                AND Value = '${escapedValue}'
             `;
 
             const valueResult = await connection.query(valueQuery);
@@ -291,16 +360,20 @@ async function addPicklistValues(connection, picklistConfig) {
 
 async function deployPicklistValue(connection, picklist) {
     try {
-        const readResult = await connection.metadata.read('CustomField', 
+        let readResult = await connection.metadata.read('CustomField', 
             `${picklist.object}.${picklist.field}`
         );
+
+        // Handle array response
+        if (Array.isArray(readResult)) {
+            readResult = readResult[0];
+        }
 
         if (!readResult || !readResult.valueSet) {
             console.log(`   ⚠️  Field is not a picklist or doesn't exist`);
             return;
         }
 
-        // Check if value already exists
         const existingValues = readResult.valueSet.valueSetDefinition?.value || [];
         const valueExists = existingValues.some(v => v.fullName === picklist.value);
 
@@ -310,7 +383,6 @@ async function deployPicklistValue(connection, picklist) {
             return;
         }
 
-        // Add new value
         const newValue = {
             fullName: picklist.value,
             label: picklist.label || picklist.value,
@@ -337,13 +409,18 @@ async function deployPicklistValue(connection, picklist) {
 
 async function updatePicklistValue(connection, picklist) {
     try {
-        const readResult = await connection.metadata.read(
+        let readResult = await connection.metadata.read(
             'CustomField',
             `${picklist.object}.${picklist.field}`
         );
 
+        // Handle array response
+        if (Array.isArray(readResult)) {
+            readResult = readResult[0];
+        }
+
         if (!readResult || !readResult.valueSet) {
-            console.log(`⚠️ Field is not a picklist or doesn't exist`);
+            console.log(`   ⚠️  Field is not a picklist or doesn't exist`);
             return;
         }
 
@@ -351,7 +428,7 @@ async function updatePicklistValue(connection, picklist) {
         const targetIndex = existingValues.findIndex(v => v.fullName === picklist.value);
 
         if (targetIndex === -1) {
-            console.log(`❌ Value "${picklist.value}" not found`);
+            console.log(`   ❌ Value "${picklist.value}" not found`);
             return;
         }
 
@@ -370,13 +447,13 @@ async function updatePicklistValue(connection, picklist) {
         const updateResult = await connection.metadata.update('CustomField', readResult);
 
         if (updateResult.success) {
-            console.log(`✅ Updated picklist value "${picklist.value}"`);
+            console.log(`   ✅ Updated picklist value "${picklist.value}"`);
         } else {
-            console.log(`❌ Failed to update value: ${updateResult.errors?.join(', ')}`);
+            console.log(`   ❌ Failed to update value: ${updateResult.errors?.join(', ')}`);
         }
 
     } catch (error) {
-        console.log(`❌ Metadata update failed: ${error.message}`);
+        console.log(`   ❌ Metadata update failed: ${error.message}`);
     }
 }
 
@@ -384,42 +461,75 @@ async function createCustomRecords(connection, recordsConfig) {
     console.log('\n📝 Creating Custom Records...');
 
     for (const record of recordsConfig) {
+        try {
+            // SECURITY: Check for restricted SObjects
+            if (RESTRICTED_SOBJECTS.includes(record.sObject)) {
+                console.log(`   ⚠️  Restricted SObject: ${record.sObject}. Skipping for security.`);
+                continue;
+            }
+
+            // SECURITY: Validate SObject name
+            if (!isValidSalesforceIdentifier(record.sObject)) {
+                console.log(`   ⚠️  Invalid SObject name: ${record.sObject}. Skipping.`);
+                continue;
+            }
+
         console.log(`   - ${record.sObject}: ${record.data.Name || 'Record'}`);
             
         const operation = (record?.operation || 'create').toLowerCase();
 
-        if(['create','update','delete'].indexOf(operation) === -1) {
-            console.log(`   ⚠️  Invalid operation "${operation}". Skipping.`);
+            // SECURITY: Disable delete operations
+            if (operation === 'delete') {
+                console.log(`   ⚠️  Delete operations are disabled for security. Skipping.`);
             continue;
         }
 
-        if (operation === 'update' || operation === 'delete') {
-            if (!record.data.Id) {
-                console.log(`   ⚠️  ${operation.charAt(0).toUpperCase() + operation.slice(1)} operation requires an Id field. Skipping.`);
+            if (!['create', 'update'].includes(operation)) {
+                console.log(`   ⚠️  Invalid operation: ${operation}. Skipping.`);
                 continue;
             }
-        }
 
-        try {
+            if (operation === 'update') {
+                if (!record.data.Id) {
+                    console.log(`   ⚠️  Update requires an Id field. Skipping.`);
+                    continue;
+                }
+
+                // SECURITY: Validate Salesforce ID format
+                if (!isValidSalesforceId(record.data.Id)) {
+                    console.log(`   ⚠️  Invalid Salesforce ID format. Skipping.`);
+                    continue;
+                }
+            }
+
+            // SECURITY: Check for restricted fields in data
+            const restrictedFieldsPresent = Object.keys(record.data).filter(key => 
+                RESTRICTED_FIELDS.includes(key) || key.startsWith('__')
+            );
+
+            if (restrictedFieldsPresent.length > 0) {
+                console.log(`   ⚠️  Restricted fields detected: ${restrictedFieldsPresent.join(', ')}. Skipping.`);
+                continue;
+            }
+
             let result;
             if (operation === 'create') {
                 result = await connection.sobject(record.sObject).create(record.data);
             } else if (operation === 'update') {
                 result = await connection.sobject(record.sObject).update(record.data);
-            } else {
-                result = await connection.sobject(record.sObject).delete(record.data.Id);
             }
 
             if (result?.success) {
-                console.log(`✅ ${operation} successful (ID: ${result.id || record.data.Id})`);
+                console.log(`   ✅ ${operation.charAt(0).toUpperCase() + operation.slice(1)} successful (ID: ${result.id || record.data.Id})`);
             } else {
-                const errors = (result?.errors || []).map(e => e.message || e).join(', ');
-                console.log(`❌ Failed: ${errors || 'Unknown error'}`);
+                const errors = Array.isArray(result?.errors) 
+                    ? result.errors.map(e => e.message || e).join(', ')
+                    : 'Unknown error';
+                console.log(`   ❌ Failed: ${errors}`);
             }
         } catch (error) {
-            console.log(`❌ Failed: ${error.message}`);
+            console.log(`   ❌ Failed: ${error.message}`);
         }
-
     }
 }
 
