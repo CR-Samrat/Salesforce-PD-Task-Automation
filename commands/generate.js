@@ -145,7 +145,7 @@ async function convertExcelToConfig(excelPath) {
                         break;
                         
                     case 'Record':
-                        if (!row['SObject Type'] || !row['Record Name']) {
+                        if (!row['SObject Type']) {
                             errors.push(`Row ${rowNum}: Record task missing required fields`);
                             break;
                         }
@@ -162,9 +162,7 @@ async function convertExcelToConfig(excelPath) {
                             break;
                         }
 
-                        const recordData = {
-                            Name: row['Record Name']
-                        };
+                        const recordData = {};
                         
                         if (row['Additional Fields (JSON)']) {
                             try {
